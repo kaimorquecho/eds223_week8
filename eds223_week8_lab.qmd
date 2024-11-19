@@ -1,0 +1,157 @@
+---
+title: "eds223_week8"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(terra)
+library(sf)
+library(tidyverse)
+library(here)
+library(tmap)
+```
+
+```{r}
+# create a function to calculate NDVI
+
+ndvi_fun <- function(nir, red){         # nir is near infrared
+(nir - red)/(nir + red)
+} 
+```
+
+### Complete NDVI for a single scene 
+```{r}
+landsat_20180612 <- terra::rast(here("data","landsat_20180612.tif"))
+
+# re-name each layer
+names(landsat_20180612) <- c("blue","green","red","NIR","SWIR1","SWIR2") # SWIR is short wave infrared
+
+# apply our NDVI fun
+ndvi_20180612 <- lapp(landsat_20180612[[c(4,3)]], fun = ndvi_fun) # local algebra, applied to each cell, c(4,3) is the layers, red and nir
+
+tm_shape(ndvi_20180612) +
+  tm_raster(title = "NDVI") +
+  tm_layout(legend.outside = TRUE)
+```
+
+### Compute NDVI for all scenes 
+```{r}
+ndvi_fun <- function(nir, red){   # nir is near infrared
+(nir - red)/(nir + red)
+} 
+```
+
+```{r}
+create_ndvi_layer <-function(i){
+  
+  # step 1: read in scene 
+  landsat <- terra::rast(files[i])
+  # step 2: rename bands in scene 
+  names(landsat) <- c("blue","green","red","NIR","SWIR1","SWIR2")
+  # step 3: compute NDVI
+  ndvi <- lapp(landsat[[c(4,3)]], fun = ndvi_fun)
+  
+  return(ndvi)
+}
+```
+
+```{r}
+# get list of all our files 
+
+files <- list.files(here("data"),
+                         pattern = "*.tif", 
+                         full.names = TRUE) # full.names gives complete file path
+```
+
+```{r}
+# stack all our rast layers, one per scene, containing its NDVI
+
+all_ndvi <- c(create_ndvi_layer(1),
+              create_ndvi_layer(2),
+              create_ndvi_layer(3),
+              create_ndvi_layer(4),
+              create_ndvi_layer(5),
+              create_ndvi_layer(6),
+              create_ndvi_layer(7),
+              create_ndvi_layer(8))
+
+# rename the layers
+names(all_ndvi) <- c("2018-06-12",
+                     "2018-08-15",
+                     "2018-10-18",
+                     "2018-11-03",
+                     "2019-01-22",
+                     "2019-02-23",
+                     "2019-04-12",
+                     "2019-07-01")
+```
+
+```{r}
+# create a df out of "files" to then use str_subset 
+file_names <- data.frame(file_name = files) %>% 
+  mutate(date = str_sub(file_name, start = -12L, end = -5L))
+# using str_match may be easier 
+names(all_ndvi) <- file_names$date
+```
+
+## Compare NDVI across veg communities 
+
+### Get data on veg communities
+
+```{r}
+sites <- st_read(here("data","study_sites.shp"))
+
+tm_shape(all_ndvi[[1]]) +
+  tm_raster() +
+  tm_shape(sites) +
+  tm_polygons()
+```
+
+```{r}
+sites_ndvi <- terra::extract(all_ndvi, sites, fun = "mean")
+
+sites_annotated <- cbind(sites, sites_ndvi)
+```
+
+```{r}
+# we are dropping cols we do not need
+
+sites_clean <- sites_annotated %>%
+  # initial cleaning
+  select(-ID) %>%
+  st_drop_geometry() %>%
+  pivot_longer(!study_site) %>%
+  rename("NDVI" = value) %>%
+  # create date component attributes
+  mutate("year" = str_sub(name,2,5),
+         "month" = str_sub(name,6,7),
+         "day" = str_sub(name, -2, -1)) %>%
+  # combine date elements
+  unite("date", 4:6, sep = "-") %>%
+  mutate("date"= lubridate::as_date(date)) %>%
+  select(-name) %>%
+  # renaming to combine forest1, forest2, forest3, aka combine study sites by veg type
+  mutate("veg_type" = case_when(study_site == "forest1" ~ "forest",
+                                study_site == "forest2" ~ "forest",
+                                study_site == "forest3" ~ "forest",
+                                study_site == "grassland" ~ "grassland",
+                                study_site == "chaparral" ~ "chaparral")) %>%
+  group_by(veg_type,date) %>%
+  summarise("NDVI" = mean(NDVI, na.rm = TRUE))
+```
+
+```{r}
+ggplot(sites_clean,
+       aes(x = date, y = NDVI,
+           col = veg_type)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(x = " ",
+       y = "Normalized Difference Vegetation Index (NDVI)",
+       col = "Vegetation type",
+       title = "Seasonal cycle of vegetation productivity")
+```
+
